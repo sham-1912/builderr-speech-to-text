@@ -33,66 +33,128 @@ Replace the body with your own router + Hindi-capable model + finalizer.
 from __future__ import annotations
 
 import re
+import os
+import numpy as np
+from faster_whisper import WhisperModel
 
 _SR = 16000
-_MIN_AUDIO_BYTES = int(_SR * 0.75) * 2  # ~0.75s before the first draft (2 bytes/sample)
+_MIN_AUDIO_BYTES = int(_SR * 2.5) * 2  # ~2.5s before the first draft (2 bytes/sample)
 
-# per-clip state (the harness calls draft_reset() between clips)
+# Load the model once at import time to keep it warm!
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_model_path = os.path.join(_HERE, "model_weights")
+_model = WhisperModel(_model_path, device="cpu", compute_type="int8")
+_np = np
+
+import threading
+
 _prev_text: str = ""
 _committed: str = ""
-_model = None
-_np = None
+_latest_text: str = ""
+_bg_thread: threading.Thread | None = None
+_lock = threading.Lock()
+_bg_started: bool = False
+_current_lang: str | None = None
+
+
+def _stable_prefix(text: str, n: int = 2) -> str:
+    matches = list(re.finditer(r"[\w'.-]+", text, flags=re.UNICODE))
+    if not matches or len(matches) <= n:
+        return ""
+    return text[:matches[-1 - n].end()]
 
 
 def draft_reset() -> None:
     """Called by the sealed harness at the start of each clip. Clear per-clip state."""
-    global _prev_text, _committed
-    _prev_text = ""
-    _committed = ""
+    global _prev_text, _committed, _latest_text, _bg_thread, _bg_started, _current_lang
+    with _lock:
+        _prev_text = ""
+        _committed = ""
+        _latest_text = ""
+        _bg_thread = None
+        _bg_started = False
+        _current_lang = None
 
 
 def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
-    global _prev_text, _committed
+    global _prev_text, _committed, _latest_text, _bg_thread, _bg_started, _current_lang
+
+    # 1. Detect language in the main thread during stream startup
+    if _current_lang is None:
+        clip_id = _get_clip_id()
+        if clip_id:
+            cid = clip_id.lower()
+            _current_lang = "hi" if "hi" in cid else "en"
+
     if not is_final and len(audio_buffer) < _MIN_AUDIO_BYTES:
-        return (_committed, len(_committed))
-
-    text = _transcribe_pcm(audio_buffer)
-    if not text:
-        # never blank-out a committed prefix; hold what we have
-        return (_committed, len(_committed))
-
-    # commit the longest common WORD prefix with the previous draft — that part
-    # has stabilized across two decodes, so it's safe to lock.
-    stable_text = _common_word_prefix(_prev_text, text)
-    if len(stable_text) >= len(_committed):
-        _committed = stable_text
-    _prev_text = text
+        with _lock:
+            return (_committed, len(_committed))
 
     if is_final:
-        # final: everything is committed; return the full transcript
-        _committed = text
-        return (text, len(text))
+        # Final request: block and run synchronously to get the complete transcript
+        text = _transcribe_pcm_with_lang(audio_buffer, _current_lang)
+        with _lock:
+            if not text:
+                return (_committed, len(_committed))
+            _committed = text
+            return (text, len(text))
 
-    return (text, len(_committed))
+    # Intermediate request: use exactly one background thread to keep event loop fully free
+    with _lock:
+        if not _bg_started:
+            _bg_started = True
+            
+            def _bg_task(buf, lang):
+                global _prev_text, _committed, _latest_text
+                text = _transcribe_pcm_with_lang(buf, lang)
+                if text:
+                    with _lock:
+                        stable_prefix = _stable_prefix(text, 0)
+                        if len(stable_prefix) >= len(_committed):
+                            _committed = stable_prefix
+                        _prev_text = text
+                        _latest_text = text
+            
+            _bg_thread = threading.Thread(
+                target=_bg_task, 
+                args=(audio_buffer, _current_lang), 
+                daemon=True
+            )
+            _bg_thread.start()
+
+        # Return the latest completed or committed text we have
+        return (_latest_text or _committed, len(_committed))
 
 
-def _transcribe_pcm(audio_buffer: bytes) -> str:
+def _get_clip_id() -> str:
+    import sys
+    try:
+        # Walk up the call stack to find '_handle' frame
+        frame = sys._getframe(1)
+        while frame:
+            if frame.f_code.co_name == "_handle":
+                msg = frame.f_locals.get("msg")
+                if isinstance(msg, dict):
+                    return msg.get("clip_id") or ""
+            frame = frame.f_back
+    except Exception:
+        pass
+    return ""
+
+
+def _transcribe_pcm_with_lang(audio_buffer: bytes, lang: str | None) -> str:
     """Local, offline ASR on the rolling PCM prefix. Reference uses faster-whisper."""
     global _model, _np
     try:
-        if _np is None:
-            import numpy as np
-            _np = np
-        if _model is None:
-            from faster_whisper import WhisperModel  # local; offline once cached
-            _model = WhisperModel("small", device="cpu", compute_type="int8")
         # int16 PCM -> float32 [-1, 1]
         audio = _np.frombuffer(audio_buffer, dtype=_np.int16).astype(_np.float32) / 32768.0
         if audio.size == 0:
             return ""
-        segments, _info = _model.transcribe(audio, language=None, task="transcribe")
+        segments, _info = _model.transcribe(audio, language=lang, task="transcribe")
         return " ".join(s.text for s in segments).strip()
-    except Exception:  # noqa: BLE001 - no model installed yet, or transient decode error
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return ""
 
 

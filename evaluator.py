@@ -210,7 +210,8 @@ def _free_port() -> int:
 def _start_server(module: str, port: int) -> subprocess.Popen:
     proc = subprocess.Popen(
         [sys.executable, "-m", module, "--host", "127.0.0.1", "--port", str(port)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=HERE, text=True)
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=HERE, text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"})
     # block on the READY line
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -220,13 +221,23 @@ def _start_server(module: str, port: int) -> subprocess.Popen:
                 raise RuntimeError("stream server exited before READY")
             continue
         if line.startswith(f"READY port={port}"):
+            import threading
+            def _drain(stream):
+                try:
+                    with open(os.path.join(HERE, "server.log"), "w", encoding="utf-8") as f:
+                        for line in stream:
+                            f.write(line)
+                            f.flush()
+                except Exception:
+                    pass
+            threading.Thread(target=_drain, args=(proc.stdout,), daemon=True).start()
             return proc
     raise RuntimeError("stream server did not print READY in time")
 
 
 async def _evaluate(manifest_path: str, server_module: str, runs: int,
                     enforce_offline: bool) -> dict:
-    manifest = json.load(open(manifest_path))
+    manifest = json.load(open(manifest_path, encoding="utf-8"))
     base = os.path.dirname(os.path.abspath(manifest_path))
     for c in manifest:
         wav = c.get("audio_local") or os.path.join(base, os.path.basename(c.get("audio", c["clip_id"] + ".wav")))

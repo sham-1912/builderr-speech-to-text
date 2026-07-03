@@ -56,7 +56,7 @@ def main():
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
-    manifest = json.load(open(args.manifest))
+    manifest = json.load(open(args.manifest, encoding="utf-8"))
     out_dir = Path(args.out); out_dir.mkdir(parents=True, exist_ok=True)
     staged = os.environ.get("RAMBLEFIX_AUDIO_DIR")
     staged = Path(staged) if staged else None

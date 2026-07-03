@@ -394,5 +394,5 @@ def score_stream_run(clips) -> dict:
 
 if __name__ == "__main__":
     import json, sys
-    clips = json.load(open(sys.argv[1])) if len(sys.argv) > 1 else []
+    clips = json.load(open(sys.argv[1], encoding="utf-8")) if len(sys.argv) > 1 else []
     print(json.dumps(score_stream_run(clips), indent=2))

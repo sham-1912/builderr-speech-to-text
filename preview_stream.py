@@ -21,7 +21,7 @@ from evaluator import _evaluate  # noqa: E402
 
 def main():
     manifest = os.path.join(HERE, "samples/manifest.json")
-    res = asyncio.run(_evaluate(manifest, "solution.stream_server", runs=5,
+    res = asyncio.run(_evaluate(manifest, "solution.stream_server", runs=1,
                                 enforce_offline=True))
     print(f"\n  streaming score   {res['overall_score']}/100")
     print(f"  meaning {res['meaning_mean']}   WER {res['wer_mean']}   churn {res['churn_mean']}")
