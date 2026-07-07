@@ -25,7 +25,7 @@ def transcribe(wav_path: str, mode: str = "auto") -> dict:
         a = time.time()
         import os
         model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights")
-        model = WhisperModel(model_path, device="cpu", compute_type="int8")
+        model = WhisperModel("small", device="cpu", compute_type="int8", download_root=model_path)
         segments, info = model.transcribe(wav_path, language=None, task="transcribe")
         text = " ".join(s.text for s in segments).strip()
         asr_ms = (time.time() - a) * 1000

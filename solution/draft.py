@@ -43,7 +43,7 @@ _MIN_AUDIO_BYTES = int(_SR * 2.5) * 2  # ~2.5s before the first draft (2 bytes/s
 # Load the model once at import time to keep it warm!
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _model_path = os.path.join(_HERE, "model_weights")
-_model = WhisperModel(_model_path, device="cpu", compute_type="int8")
+_model = WhisperModel("small", device="cpu", compute_type="int8", download_root=_model_path)
 _np = np
 
 import threading
