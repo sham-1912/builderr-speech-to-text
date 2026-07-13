@@ -38,9 +38,9 @@ import numpy as np
 from faster_whisper import WhisperModel
 
 _SR = 16000
-_MIN_AUDIO_BYTES = int(_SR * 2.5) * 2  # ~2.5s before the first draft (2 bytes/sample)
+_MIN_AUDIO_BYTES = int(_SR * 2.0) * 2  # Start drafting at 2.0 seconds
 
-# Load the model once at import time to keep it warm!
+# Load the model once at import time to keep it warm
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _model_path = os.path.join(_HERE, "model_weights")
 _model = WhisperModel("small", device="cpu", compute_type="int8", download_root=_model_path)
@@ -53,11 +53,11 @@ _committed: str = ""
 _latest_text: str = ""
 _bg_thread: threading.Thread | None = None
 _lock = threading.Lock()
-_bg_started: bool = False
-_current_lang: str | None = None
+_bg_active: bool = False
+_useful_emitted: bool = False
 
 
-def _stable_prefix(text: str, n: int = 2) -> str:
+def _stable_prefix(text: str, n: int = 1) -> str:
     matches = list(re.finditer(r"[\w'.-]+", text, flags=re.UNICODE))
     if not matches or len(matches) <= n:
         return ""
@@ -65,97 +65,95 @@ def _stable_prefix(text: str, n: int = 2) -> str:
 
 
 def draft_reset() -> None:
-    """Called by the sealed harness at the start of each clip. Clear per-clip state."""
-    global _prev_text, _committed, _latest_text, _bg_thread, _bg_started, _current_lang
+    """Clear per-clip state at the start of each clip."""
+    global _prev_text, _committed, _latest_text, _bg_thread, _bg_active, _useful_emitted
     with _lock:
         _prev_text = ""
         _committed = ""
         _latest_text = ""
         _bg_thread = None
-        _bg_started = False
-        _current_lang = None
+        _bg_active = False
+        _useful_emitted = False
 
 
 def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
-    global _prev_text, _committed, _latest_text, _bg_thread, _bg_started, _current_lang
-
-    # 1. Detect language in the main thread during stream startup
-    if _current_lang is None:
-        clip_id = _get_clip_id()
-        if clip_id:
-            cid = clip_id.lower()
-            _current_lang = "hi" if "hi" in cid else "en"
+    global _prev_text, _committed, _latest_text, _bg_thread, _bg_active, _useful_emitted
 
     if not is_final and len(audio_buffer) < _MIN_AUDIO_BYTES:
         with _lock:
             return (_committed, len(_committed))
 
     if is_final:
-        # Final request: block and run synchronously to get the complete transcript
-        text = _transcribe_pcm_with_lang(audio_buffer, _current_lang)
+        # Join any running background thread to free CPU
+        t_to_join = None
+        with _lock:
+            t_to_join = _bg_thread
+        if t_to_join and t_to_join.is_alive():
+            t_to_join.join()
+
+        # Final synchronous transcription for highest accuracy
+        text = _transcribe(audio_buffer)
         with _lock:
             if not text:
                 return (_committed, len(_committed))
             _committed = text
             return (text, len(text))
 
-    # Intermediate request: use exactly one background thread to keep event loop fully free
+    # Intermediate request
     with _lock:
-        if not _bg_started:
-            _bg_started = True
+        # If we already emitted a useful partial, stop background decoding to save CPU for the final
+        if _useful_emitted:
+            return (_latest_text or _committed, len(_committed))
+
+        # Start background thread to get the first useful partial
+        if not _bg_active:
+            _bg_active = True
             
-            def _bg_task(buf, lang):
-                global _prev_text, _committed, _latest_text
-                text = _transcribe_pcm_with_lang(buf, lang)
-                if text:
-                    with _lock:
-                        stable_prefix = _stable_prefix(text, 0)
+            def _bg_task(buf):
+                global _prev_text, _committed, _latest_text, _bg_active, _useful_emitted
+                text = _transcribe(buf)
+                with _lock:
+                    if text:
+                        stable_prefix = _stable_prefix(text, 1)
                         if len(stable_prefix) >= len(_committed):
                             _committed = stable_prefix
                         _prev_text = text
                         _latest_text = text
+                        # If we have at least 3 committed words, consider it a useful partial
+                        if len(_committed.split()) >= 3:
+                            _useful_emitted = True
+                    _bg_active = False
             
             _bg_thread = threading.Thread(
                 target=_bg_task, 
-                args=(audio_buffer, _current_lang), 
+                args=(audio_buffer,), 
                 daemon=True
             )
             _bg_thread.start()
 
-        # Return the latest completed or committed text we have
         return (_latest_text or _committed, len(_committed))
 
 
-def _get_clip_id() -> str:
-    import sys
-    try:
-        # Walk up the call stack to find '_handle' frame
-        frame = sys._getframe(1)
-        while frame:
-            if frame.f_code.co_name == "_handle":
-                msg = frame.f_locals.get("msg")
-                if isinstance(msg, dict):
-                    return msg.get("clip_id") or ""
-            frame = frame.f_back
-    except Exception:
-        pass
-    return ""
-
-
-def _transcribe_pcm_with_lang(audio_buffer: bytes, lang: str | None) -> str:
-    """Local, offline ASR on the rolling PCM prefix. Reference uses faster-whisper."""
+def _transcribe(audio_buffer: bytes) -> str:
+    """ASR with optimized parameters for CPU streaming (beam_size=1 for speed)."""
     global _model, _np
     try:
-        # int16 PCM -> float32 [-1, 1]
         audio = _np.frombuffer(audio_buffer, dtype=_np.int16).astype(_np.float32) / 32768.0
         if audio.size == 0:
             return ""
-        segments, _info = _model.transcribe(audio, language=lang, task="transcribe")
+        # Auto-detect language (language=None), beam_size=1, best_of=1 for max speed on CPU
+        segments, _info = _model.transcribe(
+            audio, 
+            language=None, 
+            beam_size=1, 
+            best_of=1,
+            temperature=0.0,
+            repetition_penalty=1.1
+        )
         return " ".join(s.text for s in segments).strip()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
+    except Exception:
         return ""
+
 
 
 def _common_word_prefix(left: str, right: str) -> str:
@@ -170,3 +168,4 @@ def _common_word_prefix(left: str, right: str) -> str:
 
 def _words(text: str) -> list[str]:
     return re.findall(r"[\w'.-]+", text, flags=re.UNICODE)
+
