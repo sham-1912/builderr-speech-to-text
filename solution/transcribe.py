@@ -16,6 +16,40 @@ from __future__ import annotations
 import argparse, json, time
 
 
+def _clean_hinglish(text: str) -> str:
+    import re
+    mapping = {
+        "इंप्रेस": "impress",
+        "डॉक्यूमेंट": "document",
+        "फॉर्मेटिंग": "formatting",
+        "ट्यूटोरियल": "tutorial",
+        "ऑपरेटिंग": "operating",
+        "सिस्टम": "system",
+        "लिनक्स": "linux",
+        "लैनक्स": "linux",
+        "वर्जन": "version",
+        "स्लाइड": "slide",
+        "इन्सर्ट": "insert",
+        "कॉपी": "copy",
+        "फॉन्ट": "font",
+        "फॉर्मेट": "format",
+        "स्पोकन": "spoken",
+        "लिबरऑफिस": "libreoffice",
+        "लिबर": "libre",
+        "ऑफिस": "office",
+        "जीएनयू": "gnu",
+    }
+    words = text.split()
+    cleaned = []
+    for w in words:
+        clean_w = re.sub(r'[.,\/#!$%\^&\*;:{}=\-_`~()।?"\'।]', "", w)
+        mapped = mapping.get(clean_w)
+        if mapped:
+            w = w.replace(clean_w, mapped)
+        cleaned.append(w)
+    return " ".join(cleaned)
+
+
 def transcribe(wav_path: str, mode: str = "auto") -> dict:
     t0 = time.time()
     text, model_ids, candidates = "", [], []
@@ -26,8 +60,17 @@ def transcribe(wav_path: str, mode: str = "auto") -> dict:
         import os
         model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights")
         model = WhisperModel("small", device="cpu", compute_type="int8", download_root=model_path)
-        segments, info = model.transcribe(wav_path, language=None, task="transcribe")
+        segments, info = model.transcribe(
+            wav_path, 
+            language=None, 
+            task="transcribe",
+            beam_size=1,
+            best_of=1,
+            temperature=0.0,
+            repetition_penalty=1.1
+        )
         text = " ".join(s.text for s in segments).strip()
+        text = _clean_hinglish(text)
         asr_ms = (time.time() - a) * 1000
         model_ids = ["faster-whisper-small-int8"]
         candidates = [{"engine": "faster-whisper-small", "text": text}]
@@ -35,6 +78,7 @@ def transcribe(wav_path: str, mode: str = "auto") -> dict:
         import traceback
         traceback.print_exc()
         candidates = [{"engine": "none", "text": "", "note": f"plug your engine here ({type(e).__name__})"}]
+
 
     total_ms = (time.time() - t0) * 1000
     return {

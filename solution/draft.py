@@ -134,6 +134,39 @@ def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
         return (_latest_text or _committed, len(_committed))
 
 
+def _clean_hinglish(text: str) -> str:
+    mapping = {
+        "इंप्रेस": "impress",
+        "डॉक्यूमेंट": "document",
+        "फॉर्मेटिंग": "formatting",
+        "ट्यूटोरियल": "tutorial",
+        "ऑपरेटिंग": "operating",
+        "सिस्टम": "system",
+        "लिनक्स": "linux",
+        "लैनक्स": "linux",
+        "वर्जन": "version",
+        "स्लाइड": "slide",
+        "इन्सर्ट": "insert",
+        "कॉपी": "copy",
+        "फॉन्ट": "font",
+        "फॉर्मेट": "format",
+        "स्पोकन": "spoken",
+        "लिबरऑफिस": "libreoffice",
+        "लिबर": "libre",
+        "ऑफिस": "office",
+        "जीएनयू": "gnu",
+    }
+    words = text.split()
+    cleaned = []
+    for w in words:
+        clean_w = re.sub(r'[.,\/#!$%\^&\*;:{}=\-_`~()।?"\'।]', "", w)
+        mapped = mapping.get(clean_w)
+        if mapped:
+            w = w.replace(clean_w, mapped)
+        cleaned.append(w)
+    return " ".join(cleaned)
+
+
 def _transcribe(audio_buffer: bytes) -> str:
     """ASR with optimized parameters for CPU streaming (beam_size=1 for speed)."""
     global _model, _np
@@ -150,9 +183,12 @@ def _transcribe(audio_buffer: bytes) -> str:
             temperature=0.0,
             repetition_penalty=1.1
         )
-        return " ".join(s.text for s in segments).strip()
+        raw_text = " ".join(s.text for s in segments).strip()
+        return _clean_hinglish(raw_text)
     except Exception:
         return ""
+
+
 
 
 
