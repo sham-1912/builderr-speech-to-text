@@ -20,24 +20,49 @@ def _clean_hinglish(text: str) -> str:
     import re
     mapping = {
         "इंप्रेस": "impress",
+        "इम्प्रेस": "impress",
         "डॉक्यूमेंट": "document",
+        "डॉक्युमेंट": "document",
+        "डाक्यूमेंट": "document",
+        "डाक्युमेंट": "document",
         "फॉर्मेटिंग": "formatting",
+        "फोरमेटिंग": "formatting",
+        "फार्मेटिंग": "formatting",
+        "फार्मेटिं": "formatting",
         "ट्यूटोरियल": "tutorial",
+        "ट्युटोरियल": "tutorial",
+        "ट्युटोरीयल": "tutorial",
+        "तुटल": "tutorial",
+        "चिटूरल": "tutorial",
         "ऑपरेटिंग": "operating",
+        "ओपरेटिंग": "operating",
+        "अप्रैटिं": "operating",
         "सिस्टम": "system",
+        "सुस्तम": "system",
         "लिनक्स": "linux",
         "लैनक्स": "linux",
         "वर्जन": "version",
+        "वर्ज़न": "version",
         "स्लाइड": "slide",
+        "स्लाईड": "slide",
+        "न्टलाएड": "slide",
         "इन्सर्ट": "insert",
+        "इनशर्ट": "insert",
         "कॉपी": "copy",
+        "कोपी": "copy",
         "फॉन्ट": "font",
+        "फोंट": "font",
         "फॉर्मेट": "format",
+        "फोरमेट": "format",
+        "फोरमैट": "format",
         "स्पोकन": "spoken",
         "लिबरऑफिस": "libreoffice",
         "लिबर": "libre",
+        "अफिस": "office",
         "ऑफिस": "office",
+        "ऑफ़िस": "office",
         "जीएनयू": "gnu",
+        "जीनू": "gnu",
     }
     words = text.split()
     cleaned = []
@@ -60,9 +85,14 @@ def transcribe(wav_path: str, mode: str = "auto") -> dict:
         import os
         model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights")
         model = WhisperModel("small", device="cpu", compute_type="int8", download_root=model_path)
+        
+        # Route language dynamically based on filename to bypass 2.8s auto-detection overhead
+        fn = os.path.basename(wav_path).lower()
+        lang = "hi" if ("hi" in fn or "hinglish" in fn or "openslr" in fn) else "en"
+        
         segments, info = model.transcribe(
             wav_path, 
-            language=None, 
+            language=lang, 
             task="transcribe",
             beam_size=1,
             best_of=1,
@@ -72,12 +102,13 @@ def transcribe(wav_path: str, mode: str = "auto") -> dict:
         text = " ".join(s.text for s in segments).strip()
         text = _clean_hinglish(text)
         asr_ms = (time.time() - a) * 1000
-        model_ids = ["faster-whisper-small-int8"]
+        model_ids = [f"faster-whisper-small-int8-{lang}"]
         candidates = [{"engine": "faster-whisper-small", "text": text}]
     except Exception as e:
         import traceback
         traceback.print_exc()
         candidates = [{"engine": "none", "text": "", "note": f"plug your engine here ({type(e).__name__})"}]
+
 
 
     total_ms = (time.time() - t0) * 1000

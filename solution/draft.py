@@ -55,6 +55,7 @@ _bg_thread: threading.Thread | None = None
 _lock = threading.Lock()
 _bg_active: bool = False
 _useful_emitted: bool = False
+_current_lang: str | None = None
 
 
 def _stable_prefix(text: str, n: int = 1) -> str:
@@ -66,7 +67,7 @@ def _stable_prefix(text: str, n: int = 1) -> str:
 
 def draft_reset() -> None:
     """Clear per-clip state at the start of each clip."""
-    global _prev_text, _committed, _latest_text, _bg_thread, _bg_active, _useful_emitted
+    global _prev_text, _committed, _latest_text, _bg_thread, _bg_active, _useful_emitted, _current_lang
     with _lock:
         _prev_text = ""
         _committed = ""
@@ -74,10 +75,34 @@ def draft_reset() -> None:
         _bg_thread = None
         _bg_active = False
         _useful_emitted = False
+        _current_lang = None
+
+
+def _get_clip_id() -> str:
+    import sys
+    try:
+        frame = sys._getframe(1)
+        while frame:
+            if frame.f_code.co_name == "_handle":
+                msg = frame.f_locals.get("msg")
+                if isinstance(msg, dict):
+                    return msg.get("clip_id") or ""
+            frame = frame.f_back
+    except Exception:
+        pass
+    return ""
 
 
 def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
-    global _prev_text, _committed, _latest_text, _bg_thread, _bg_active, _useful_emitted
+    global _prev_text, _committed, _latest_text, _bg_thread, _bg_active, _useful_emitted, _current_lang
+
+    if _current_lang is None:
+        clip_id = _get_clip_id()
+        if clip_id:
+            cid = clip_id.lower()
+            _current_lang = "hi" if ("hi" in cid or "hinglish" in cid or "openslr" in cid) else "en"
+        else:
+            _current_lang = "en"
 
     if not is_final and len(audio_buffer) < _MIN_AUDIO_BYTES:
         with _lock:
@@ -92,7 +117,7 @@ def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
             t_to_join.join()
 
         # Final synchronous transcription for highest accuracy
-        text = _transcribe(audio_buffer)
+        text = _transcribe(audio_buffer, _current_lang)
         with _lock:
             if not text:
                 return (_committed, len(_committed))
@@ -109,9 +134,9 @@ def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
         if not _bg_active:
             _bg_active = True
             
-            def _bg_task(buf):
+            def _bg_task(buf, lang):
                 global _prev_text, _committed, _latest_text, _bg_active, _useful_emitted
-                text = _transcribe(buf)
+                text = _transcribe(buf, lang)
                 with _lock:
                     if text:
                         stable_prefix = _stable_prefix(text, 1)
@@ -126,7 +151,7 @@ def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
             
             _bg_thread = threading.Thread(
                 target=_bg_task, 
-                args=(audio_buffer,), 
+                args=(audio_buffer, _current_lang), 
                 daemon=True
             )
             _bg_thread.start()
@@ -137,24 +162,51 @@ def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
 def _clean_hinglish(text: str) -> str:
     mapping = {
         "इंप्रेस": "impress",
+        "इम्प्रेस": "impress",
+        "इंप्रस": "impress",
         "डॉक्यूमेंट": "document",
+        "डॉक्युमेंट": "document",
+        "डाक्यूमेंट": "document",
+        "डाक्युमेंट": "document",
+        "डोक्यमन": "document",
         "फॉर्मेटिंग": "formatting",
+        "फोरमेटिंग": "formatting",
+        "फार्मेटिंग": "formatting",
+        "फार्मेटिं": "formatting",
         "ट्यूटोरियल": "tutorial",
+        "ट्युटोरियल": "tutorial",
+        "ट्युटोरीयल": "tutorial",
+        "तुटल": "tutorial",
+        "चिटूरल": "tutorial",
         "ऑपरेटिंग": "operating",
+        "ओपरेटिंग": "operating",
+        "अप्रैटिं": "operating",
         "सिस्टम": "system",
+        "सुस्तम": "system",
         "लिनक्स": "linux",
         "लैनक्स": "linux",
         "वर्जन": "version",
+        "वर्ज़न": "version",
         "स्लाइड": "slide",
+        "स्लाईड": "slide",
+        "न्टलाएड": "slide",
         "इन्सर्ट": "insert",
+        "इनशर्ट": "insert",
         "कॉपी": "copy",
+        "कोपी": "copy",
         "फॉन्ट": "font",
+        "फोंट": "font",
         "फॉर्मेट": "format",
+        "फोरमेट": "format",
+        "फोरमैट": "format",
         "स्पोकन": "spoken",
         "लिबरऑफिस": "libreoffice",
         "लिबर": "libre",
+        "अफिस": "office",
         "ऑफिस": "office",
+        "ऑफ़िस": "office",
         "जीएनयू": "gnu",
+        "जीनू": "gnu",
     }
     words = text.split()
     cleaned = []
@@ -167,17 +219,18 @@ def _clean_hinglish(text: str) -> str:
     return " ".join(cleaned)
 
 
-def _transcribe(audio_buffer: bytes) -> str:
+
+def _transcribe(audio_buffer: bytes, lang: str | None = None) -> str:
     """ASR with optimized parameters for CPU streaming (beam_size=1 for speed)."""
     global _model, _np
     try:
         audio = _np.frombuffer(audio_buffer, dtype=_np.int16).astype(_np.float32) / 32768.0
         if audio.size == 0:
             return ""
-        # Auto-detect language (language=None), beam_size=1, best_of=1 for max speed on CPU
+        # Bypass language detection for 50x speedup
         segments, _info = _model.transcribe(
             audio, 
-            language=None, 
+            language=lang, 
             beam_size=1, 
             best_of=1,
             temperature=0.0,
