@@ -78,47 +78,19 @@ def draft_reset() -> None:
         _current_lang = None
 
 
-def _get_clip_id() -> str:
-    import sys
-    try:
-        frame = sys._getframe(1)
-        while frame:
-            if frame.f_code.co_name == "_handle":
-                msg = frame.f_locals.get("msg")
-                if isinstance(msg, dict):
-                    return msg.get("clip_id") or ""
-            frame = frame.f_back
-    except Exception:
-        pass
-    return ""
-
-
 def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
     global _prev_text, _committed, _latest_text, _bg_thread, _bg_active, _useful_emitted, _current_lang
-
-    if _current_lang is None:
-        clip_id = _get_clip_id()
-        if clip_id:
-            cid = clip_id.lower()
-            _current_lang = "hi" if ("hi" in cid or "hinglish" in cid or "openslr" in cid) else "en"
-        else:
-            _current_lang = "en"
 
     if not is_final and len(audio_buffer) < _MIN_AUDIO_BYTES:
         with _lock:
             return (_committed, len(_committed))
 
     if is_final:
-        # Join any running background thread to free CPU
-        t_to_join = None
-        with _lock:
-            t_to_join = _bg_thread
-        if t_to_join and t_to_join.is_alive():
-            t_to_join.join()
-
         # Final synchronous transcription for highest accuracy
-        text = _transcribe(audio_buffer, _current_lang)
+        text, detected_lang = _transcribe(audio_buffer, _current_lang)
         with _lock:
+            if _current_lang is None:
+                _current_lang = detected_lang
             if not text:
                 return (_committed, len(_committed))
             _committed = text
@@ -135,9 +107,11 @@ def draft(audio_buffer: bytes, is_final: bool) -> tuple[str, int]:
             _bg_active = True
             
             def _bg_task(buf, lang):
-                global _prev_text, _committed, _latest_text, _bg_active, _useful_emitted
-                text = _transcribe(buf, lang)
+                global _prev_text, _committed, _latest_text, _bg_active, _useful_emitted, _current_lang
+                text, detected_lang = _transcribe(buf, lang)
                 with _lock:
+                    if _current_lang is None:
+                        _current_lang = detected_lang
                     if text:
                         stable_prefix = _stable_prefix(text, 1)
                         if len(stable_prefix) >= len(_committed):
@@ -220,15 +194,15 @@ def _clean_hinglish(text: str) -> str:
 
 
 
-def _transcribe(audio_buffer: bytes, lang: str | None = None) -> str:
+def _transcribe(audio_buffer: bytes, lang: str | None = None) -> tuple[str, str | None]:
     """ASR with optimized parameters for CPU streaming (beam_size=1 for speed)."""
     global _model, _np
     try:
         audio = _np.frombuffer(audio_buffer, dtype=_np.int16).astype(_np.float32) / 32768.0
         if audio.size == 0:
-            return ""
-        # Bypass language detection for 50x speedup
-        segments, _info = _model.transcribe(
+            return "", lang
+        # Bypass language detection for 50x speedup if lang is cached, otherwise auto-detect
+        segments, info = _model.transcribe(
             audio, 
             language=lang, 
             beam_size=1, 
@@ -237,9 +211,10 @@ def _transcribe(audio_buffer: bytes, lang: str | None = None) -> str:
             repetition_penalty=1.1
         )
         raw_text = " ".join(s.text for s in segments).strip()
-        return _clean_hinglish(raw_text)
+        detected_lang = info.language if info else (lang or "en")
+        return _clean_hinglish(raw_text), detected_lang
     except Exception:
-        return ""
+        return "", lang
 
 
 
