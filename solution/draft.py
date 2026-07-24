@@ -40,9 +40,28 @@ from faster_whisper import WhisperModel
 _SR = 16000
 _MIN_AUDIO_BYTES = int(_SR * 2.0) * 2  # Start drafting at 2.0 seconds
 
+def _ensure_model_weights(model_dir: str) -> None:
+    model_bin = os.path.join(model_dir, "model.bin")
+    if not os.path.exists(model_bin):
+        parts = []
+        i = 1
+        while True:
+            p = os.path.join(model_dir, f"model.bin.part{i}")
+            if os.path.exists(p):
+                parts.append(p)
+                i += 1
+            else:
+                break
+        if parts:
+            with open(model_bin, "wb") as outfile:
+                for p in parts:
+                    with open(p, "rb") as infile:
+                        outfile.write(infile.read())
+
 # Load the model once at import time to keep it warm
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _model_path = os.path.join(_HERE, "model_weights")
+_ensure_model_weights(_model_path)
 _model = WhisperModel("small", device="cpu", compute_type="int8", download_root=_model_path)
 _np = np
 

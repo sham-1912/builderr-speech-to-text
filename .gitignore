@@ -9,3 +9,7 @@ data/hidden/
 # private dictation lab — your own voice + transcribed words, never publish
 lab_recordings/
 tools/recording_lab/
+
+solution/model_weights/model.bin
+solution/model_weights/models--Systran--faster-whisper-small/
+
