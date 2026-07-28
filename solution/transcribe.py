@@ -86,7 +86,7 @@ def transcribe(wav_path: str, mode: str = "auto") -> dict:
         model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights")
         from solution.draft import _ensure_model_weights
         _ensure_model_weights(model_path)
-        model = WhisperModel("small", device="cpu", compute_type="int8", download_root=model_path)
+        model = WhisperModel("small", device="cpu", compute_type="int8", download_root=model_path, local_files_only=True)
         
         # Route language dynamically based on filename to bypass 2.8s auto-detection overhead
         fn = os.path.basename(wav_path).lower()
