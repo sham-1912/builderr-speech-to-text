@@ -62,7 +62,7 @@ def _ensure_model_weights(model_dir: str) -> None:
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _model_path = os.path.join(_HERE, "model_weights")
 _ensure_model_weights(_model_path)
-_model = WhisperModel("small", device="cpu", compute_type="int8", download_root=_model_path, local_files_only=True)
+_model = WhisperModel(_model_path, device="cpu", compute_type="int8", local_files_only=True)
 _np = np
 
 import threading
